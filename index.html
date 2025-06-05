@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <title>メトロノーム</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 2rem;
+      background: #fafafa;
+    }
+
+    .controls {
+      margin-bottom: 2rem;
+    }
+
+    label,
+    h2 {
+      display: block;
+      margin-bottom: 0.5rem;
+    }
+
+    .pattern-list {
+      display: grid;
+      grid-template-columns: repeat(4, 80px);
+      gap: 2rem;
+      margin-bottom: 1rem;
+      max-width: 400px;
+    }
+
+    .pattern {
+      width: 80px;
+      text-align: center;
+      border: 2px solid #888;
+      border-radius: 6px;
+      cursor: pointer;
+      background-color: #f9f9f9;
+      padding: 0.4rem;
+      font-weight: bold;
+    }
+
+    .slot {
+      text-align: center;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      cursor: pointer;
+      background-color: #f9f9f9;
+      padding: 0.4rem;
+      min-width: 60px;
+    }
+
+    .slot.empty {
+      background-color: #eee;
+    }
+
+    .slot.active {
+      background-color: #d0ebff;
+      border: 2px solid #74c0fc;
+    }
+
+    .accent-display {
+      font-size: 1.2rem;
+      text-align: center;
+      margin-top: 0.25rem;
+      height: 2rem;
+    }
+
+    .selected-slots {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .slot-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .button-group {
+      margin-top: 1rem;
+    }
+
+    button {
+      padding: 0.6rem 1.2rem;
+      font-size: 1rem;
+      border: none;
+      border-radius: 6px;
+      margin-right: 1rem;
+      cursor: pointer;
+      background-color: #007bff;
+      color: white;
+    }
+
+    button:hover {
+      background-color: #0056b3;
+    }
+
+    button:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+
+    .slot.selected {
+      outline: 3px solid #007bff;
+      outline-offset: 2px;
+    }
+
+    .slot.disabled,
+    .pattern.disabled {
+      pointer-events: none;
+      opacity: 0.5;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>Webメトロノーム</h2>
+
+  <div class="controls">
+    <label>
+      BPM:
+      <input type="number" id="bpm" value="100" min="30" max="300">
+    </label>
+    <label>
+      音価（全体）:
+      <select id="noteLength">
+        <option value="1">♩4</option>
+        <option value="0.5" selected>♪8</option>
+        <option value="0.25">♬16</option>
+      </select>
+    </label>
+  </div>
+
+  <p>リズムパターン（クリックで下のスロットにセット）:</p>
+  <div class="pattern-list" id="patternList"></div>
+
+  <p>選択スロット（最大4つ）:</p>
+  <div class="selected-slots" id="slots"></div>
+
+  <div class="button-group">
+    <button id="startStop" disabled>スタート</button>
+    <button id="randomSet">ランダム</button>
+  </div>
+
+  <script>
+    const ACCENT_MAP = {
+      A: [1], B: [2], C: [3], D: [4],
+      E: [1, 2], F: [2, 3], G: [3, 4], H: [1, 4],
+      I: [1, 3], J: [2, 4], K: [1, 2, 3], L: [2, 3, 4],
+      M: [1, 3, 4], N: [1, 2, 4], O: [1, 2, 3, 4], P: []
+    };
+
+    const patternList = document.getElementById("patternList");
+    const slots = document.getElementById("slots");
+
+    let isPlaying = false;
+    let context = null;
+    let intervalId = null;
+    let beatCount = 0;
+    let slotIndex = -1;
+    let currentPattern = [];
+
+    for (const key in ACCENT_MAP) {
+      const wrapper = document.createElement("div");
+      wrapper.style.display = "flex";
+      wrapper.style.flexDirection = "column";
+      wrapper.style.alignItems = "center";
+
+      const btn = document.createElement("div");
+      btn.className = "pattern";
+      btn.textContent = key;
+      btn.onclick = () => {
+        if (isPlaying) return;
+
+        let targetSlot = null;
+
+        if (selectedSlot && !selectedSlot.dataset.pattern) {
+          targetSlot = selectedSlot;
+        } else {
+          targetSlot = Array.from(slots.children).find(slot => !slot.querySelector('.slot').dataset.pattern)?.querySelector('.slot');
+        }
+
+        if (targetSlot) {
+          const key = btn.textContent;
+          targetSlot.textContent = key;
+          targetSlot.dataset.pattern = key;
+          targetSlot.classList.remove("empty");
+
+          const slotAccentDisplay = targetSlot.parentElement.querySelector('.accent-display');
+          const accents = ACCENT_MAP[key];
+          slotAccentDisplay.textContent = [1, 2, 3, 4].map(n =>
+            accents.includes(n) ? String.fromCharCode(0x2775 + n) : String.fromCharCode(0x245F + n)
+          ).join("");
+
+          // 選択状態も解除
+          targetSlot.classList.remove("selected");
+          if (targetSlot === selectedSlot) {
+            selectedSlot = null;
+          }
+
+          updateStartStopButtonState();
+        }
+      };
+
+      const accentDisplay = document.createElement("div");
+      accentDisplay.className = "accent-display";
+      const accents = ACCENT_MAP[key];
+      accentDisplay.textContent = [1, 2, 3, 4].map(n =>
+        accents.includes(n) ? String.fromCharCode(0x2775 + n) : String.fromCharCode(0x245F + n)
+      ).join("");
+
+      wrapper.appendChild(btn);
+      wrapper.appendChild(accentDisplay);
+      patternList.appendChild(wrapper);
+    }
+
+    let selectedSlot = null;
+
+    for (let i = 0; i < 4; i++) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "slot-wrapper";
+
+      const slot = document.createElement("div");
+      slot.className = "slot empty";
+      slot.textContent = "空";
+      slot.dataset.pattern = "";
+      slot.onclick = () => {
+        if (isPlaying) return;
+
+        // パターンが入っていれば削除。選択状態も解除。
+        if (slot.dataset.pattern) {
+          slot.textContent = "空";
+          slot.dataset.pattern = "";
+          slot.className = "slot empty";
+          wrapper.querySelector('.accent-display').textContent = "";
+          if (selectedSlot === slot) {
+            slot.classList.remove("selected");
+            selectedSlot = null;
+          }
+          return;
+        }
+
+        // 空スロットなら選択・選択解除
+        if (selectedSlot === slot) {
+          slot.classList.remove("selected");
+          selectedSlot = null;
+        } else {
+          slots.querySelectorAll(".slot").forEach(s => s.classList.remove("selected"));
+          slot.classList.add("selected");
+          selectedSlot = slot;
+        }
+
+        updateStartStopButtonState();
+      };
+
+      const accentDisplay = document.createElement("div");
+      accentDisplay.className = "accent-display";
+
+      wrapper.appendChild(slot);
+      wrapper.appendChild(accentDisplay);
+      slots.appendChild(wrapper);
+    }
+
+    function playClick(accent) {
+      const osc = context.createOscillator();
+      const gain = context.createGain();
+      osc.connect(gain);
+      gain.connect(context.destination);
+      osc.frequency.value = accent ? 1000 : 600;
+      gain.gain.setValueAtTime(1, context.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.1);
+      osc.start(context.currentTime);
+      osc.stop(context.currentTime + 0.1);
+    }
+
+    document.getElementById("startStop").onclick = () => {
+      const noteLength = parseFloat(document.getElementById("noteLength").value);
+      const bpm = parseInt(document.getElementById("bpm").value, 10);
+
+      if (!context) {
+        context = new (window.AudioContext || window.webkitAudioContext)();
+      }
+
+      function setPatternButtonsDisabled(disabled) {
+        document.querySelectorAll(".pattern").forEach(btn => {
+          if (disabled) {
+            btn.classList.add("disabled");
+          } else {
+            btn.classList.remove("disabled");
+          }
+        });
+      }
+
+      if (isPlaying) {
+        clearTimeout(intervalId);
+        slots.querySelectorAll(".slot").forEach(s => s.classList.remove("active"));
+        document.getElementById("startStop").textContent = "スタート";
+        isPlaying = false;
+        setPatternButtonsDisabled(false);
+        return;
+      }
+
+      const patterns = Array.from(slots.children)
+        .map(w => w.querySelector(".slot").dataset.pattern)
+        .filter(k => k);
+
+      if (patterns.length === 0) {
+        alert("パターンを選択してください");
+        return;
+      }
+
+      beatCount = 0;
+      slotIndex = -1;
+      isPlaying = true;
+      document.getElementById("startStop").textContent = "ストップ";
+      setPatternButtonsDisabled(true);
+
+
+      function scheduleNext() {
+        const beatInBar = (beatCount % 4) + 1;
+        const allWrappers = Array.from(slots.children);
+        const patternSlots = allWrappers
+          .map(w => w.querySelector(".slot"))
+          .filter(s => s.dataset.pattern);
+
+        if (beatInBar === 1) {
+          slotIndex = (slotIndex + 1) % patternSlots.length;
+          currentPattern = ACCENT_MAP[patternSlots[slotIndex].dataset.pattern];
+
+          // activeクラス更新（パターンありスロットだけ対象）
+          allWrappers.forEach((w, i) => {
+            const s = w.querySelector(".slot");
+            s.classList.remove("active");
+          });
+          patternSlots[slotIndex].classList.add("active");
+        }
+
+        const isAccent = currentPattern.includes(beatInBar);
+        playClick(isAccent);
+        beatCount++;
+
+        const interval = (60000 / bpm) * noteLength;
+        intervalId = setTimeout(scheduleNext, interval);
+      }
+
+
+      scheduleNext();
+    };
+
+    function updateStartStopButtonState() {
+      const hasPattern = Array.from(slots.children)
+        .some(w => w.querySelector(".slot").dataset.pattern);
+      document.getElementById("startStop").disabled = !hasPattern;
+    }
+
+    document.getElementById("randomSet").onclick = () => {
+      if (isPlaying) return;
+
+      const keys = Object.keys(ACCENT_MAP);
+      const random = keys.sort(() => 0.5 - Math.random()).slice(0, 4);
+
+      slots.querySelectorAll(".slot").forEach((slot, i) => {
+        const key = random[i];
+        slot.textContent = key;
+        slot.dataset.pattern = key;
+        slot.classList.remove("empty");
+
+        const accents = ACCENT_MAP[key];
+        const disp = [1, 2, 3, 4].map(n =>
+          accents.includes(n) ? String.fromCharCode(0x2775 + n) : String.fromCharCode(0x245F + n)
+        ).join("");
+
+        slot.parentElement.querySelector(".accent-display").textContent = disp;
+      });
+
+      selectedSlot = null;
+      updateStartStopButtonState();
+    };
+  </script>
+</body>
+
+</html>
